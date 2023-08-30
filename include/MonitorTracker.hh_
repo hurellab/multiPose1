@@ -1,0 +1,193 @@
+/*
+By downloading, copying, installing or using the software you agree to this
+license. If you do not agree to this license, do not download, install,
+copy or use the software.
+
+                          License Agreement
+               For Open Source Computer Vision Library
+                       (3-clause BSD License)
+
+Copyright (C) 2013, OpenCV Foundation, all rights reserved.
+Third party copyrights are property of their respective owners.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+
+  * Neither the names of the copyright holders nor the names of the contributors
+    may be used to endorse or promote products derived from this software
+    without specific prior written permission.
+
+This software is provided by the copyright holders and contributors "as is" and
+any express or implied warranties, including, but not limited to, the implied
+warranties of merchantability and fitness for a particular purpose are
+disclaimed. In no event shall copyright holders or contributors be liable for
+any direct, indirect, incidental, special, exemplary, or consequential damages
+(including, but not limited to, procurement of substitute goods or services;
+loss of use, data, or profits; or business interruption) however caused
+and on any theory of liability, whether in contract, strict liability,
+or tort (including negligence or otherwise) arising in any way out of
+the use of this software, even if advised of the possibility of such damage.
+*/
+
+#ifndef MonitorTracker_HH_
+#define MonitorTracker_HH_
+
+#include <Eigen/Sparse>
+#include <Eigen/Geometry>
+#include <Eigen/Eigenvalues>
+#include <Eigen/Geometry>
+#include <Eigen/Dense>
+
+#include <opencv2/highgui.hpp>
+#include <opencv2/aruco.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/core/eigen.hpp>
+
+#include <k4a/k4a.h>
+
+#include <iostream>
+#include <fstream>
+#include <tuple>
+
+using namespace std;
+
+class MonitorTracker
+{
+  public:
+    MonitorTracker();
+    ~MonitorTracker();
+
+    void Set_Parameters(string detParam);
+    void Set_New_Frame(cv::Mat &_image) {
+      _image.copyTo(image);
+    }
+    bool Set_Initial_Pose(cv::Mat& image);
+    void Process_Current_Frame(cv::Mat &image);
+    void Render();
+
+    Eigen::Affine3f Get_Monitor_Pose() { return A_monitor; }
+    k4a_device_t Get_Device() { return device; }
+    k4a_capture_t Get_Capture() { return capture; }
+    k4a_image_t Get_Color_Image() { return color_image; }
+
+  private:
+    void Read_Viewing_Camera_Pose(string fileName);
+
+    cv::Mat camMatrix, distCoeffs;
+    cv::Ptr<cv::aruco::DetectorParameters> params;
+    cv::Ptr<cv::aruco::Dictionary> dictionary;
+    float markerLength;
+    cv::Mat image, display;
+    int nMarkers;
+
+    map<int, cv::Vec3f> rvec0_cumuls, rveci_cumuls;
+    map<int, cv::Vec3f> tvec0_cumuls, tveci_cumuls;
+    map<int, Eigen::Quaternionf> q0_cumuls, qi_cumuls;
+    map<int, Eigen::Vector3f> t0_cumuls, ti_cumuls;
+    map<int, Eigen::Affine3f> a0_cumuls, ai_cumuls;
+
+    vector<Eigen::Affine3f> As;
+    Eigen::Affine3f A_monitor, A_viewCam, A_viewCam_inverse;
+
+    map<int, vector<cv::Point2f>> corner_cumul;
+    // map<int, vector<cv::Point2f>> corner_curr, corner_prev;
+
+    int cumulCount;
+
+    k4a_device_t device;
+    k4a_calibration_t calib;
+    k4a_capture_t capture;
+    k4a_image_t color_image;  
+
+};
+
+static cv::Mat color_to_opencv(const k4a_image_t im)
+{
+  cv::Mat cv_image_with_alpha(k4a_image_get_height_pixels(im), k4a_image_get_width_pixels(im), CV_8UC4, (void*)k4a_image_get_buffer(im));
+  cv::Mat cv_image_no_alpha;
+  cv::cvtColor(cv_image_with_alpha, cv_image_no_alpha, cv::COLOR_BGRA2BGR);
+  return cv_image_no_alpha;
+}
+
+static Eigen::Vector3f averaging_translations(const std::vector<Eigen::Vector3f>& translations)
+{
+	Eigen::Vector3f t(0,0,0);
+	for (auto itr: translations) {
+		t += itr;
+	}
+  t /= (float)translations.size();
+	return t;
+}
+
+static Eigen::Vector4f averaging_quaternions(const std::vector<Eigen::Vector4f>& quaternions)
+{
+    if (quaternions.empty())
+        return Eigen::Vector4f(0,0,0,1);
+
+    // first build a 4x4 matrix which is the elementwise sum of the product of each quaternion with itself
+    Eigen::Matrix4f A = Eigen::Matrix4f::Zero();
+
+    for (int q = 0; q < quaternions.size(); ++q)
+        A += quaternions[q] * quaternions[q].transpose();
+
+    // normalise with the number of quaternions
+    A /= quaternions.size();
+
+    // Compute the SVD of this 4x4 matrix
+    Eigen::JacobiSVD<Eigen::MatrixXf> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+    Eigen::VectorXf singularValues = svd.singularValues();
+    Eigen::MatrixXf U = svd.matrixU();
+
+    // find the eigen vector corresponding to the largest eigen value
+    int largestEigenValueIndex;
+    float largestEigenValue;
+    bool first = true;
+
+    for (int i = 0; i < singularValues.rows(); ++i)
+    {
+        if (first)
+        {
+            largestEigenValue = singularValues(i);
+            largestEigenValueIndex = i;
+            first = false;
+        }
+        else if (singularValues(i) > largestEigenValue)
+        {
+            largestEigenValue = singularValues(i);
+            largestEigenValueIndex = i;
+        }
+    }
+    Eigen::Vector4f average;
+    average(0) = -U(0, largestEigenValueIndex);
+    average(1) = -U(1, largestEigenValueIndex);
+    average(2) = -U(2, largestEigenValueIndex);
+    average(3) = -U(3, largestEigenValueIndex);
+
+    return average;
+}
+
+static Eigen::Affine3f averaging_Affine3f(const vector<Eigen::Affine3f>& affs)
+{
+	vector<Eigen::Vector4f> Qs;
+	vector<Eigen::Vector3f> Ts;
+	for (auto itr: affs) {
+		Qs.push_back(Eigen::Vector4f( Eigen::Quaternionf(itr.linear()).coeffs() ));
+		Ts.push_back(Eigen::Vector3f( itr.translation() ));
+	}
+	Eigen::Vector4f q = averaging_quaternions(Qs);
+	Eigen::Vector3f t = averaging_translations(Ts);
+	Eigen::Affine3f a;
+	a.linear() = Eigen::Quaternionf(q).normalized().toRotationMatrix();
+	a.translation() = t;
+	return a;
+}
+
+#endif
