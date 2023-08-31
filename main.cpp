@@ -134,17 +134,7 @@ int main(int argc, char **argv)
     ofstream ofs_BV("posture_BV.dat");
     while( gl_viewer_available && !quit)
     {
-        // k4a_device_get_capture(device, &capture, 1000);
-        // color_image = k4a_capture_get_color_image(capture);
-        // cv::Mat image = color_to_opencv(color_image);
-        // monitorTracker.Process_Current_Frame(image);
-        // Eigen::Affine3f monitor_pose = monitorTracker.Get_Monitor_Pose();
-        // monitorTracker.Render();
-        // k4a_capture_release(capture);
-        // k4a_image_release(color_image);
-        
-        // setFusedBodies(camera_bodies, fused_bodies);
-        sl::Bodies fusedBody, fusedBody_BV;
+        sl::Bodies fusedBody, fusedBody_BV; // old, new
         fusedBody.body_format = sl::BODY_FORMAT::BODY_34;
         fusedBody_BV.body_format = sl::BODY_FORMAT::BODY_34;
         ofs<<"f "<<frame_count<<endl; 
@@ -217,9 +207,10 @@ int main(int argc, char **argv)
                     }
                 }
                 obj.id ++;
+                ////////////////important part (intetraing the multiple skeletons)//////////////////
                 if(fusedPosture.rows()>0)
                 {
-                    //avg. kpt
+                    //avg. kpt - previous method
                     fusedBody.is_tracked = true;
                     sl::BodyData body;
                     body.id = obj.id;
@@ -237,7 +228,7 @@ int main(int argc, char **argv)
                     body.keypoint = keypoints;
                     fusedBody.body_list.push_back(body);
 
-                    //avg. bv
+                    //avg. bv - new mthod
                     fusedBody_BV.is_tracked = true;
                     Eigen::MatrixXf kpt = Eigen::MatrixXf::Zero(34, 3);
                     kpt.row(0)=Eigen::RowVector3f(keypoints[0].x, keypoints[0].y, keypoints[0].z);
@@ -246,7 +237,9 @@ int main(int argc, char **argv)
                         Eigen::RowVector4f b = fusedBV.row(i)/fusedConf_BV(i);
                         kpt.row((int)sl::BODY_34_BONES[i].second) = kpt.row((int)sl::BODY_34_BONES[i].first) + b.leftCols(3).normalized()*b(3);
                     }
-                    if(isnan(kpt(30, 0)+kpt(28, 0))){
+                    if(isnan(kpt(30, 0)+kpt(28, 0))){ // if there is undetectable eye, neither the eyes nor the ears are not detectable. 
+                    //--> therefore, these joint positions are decided according to the averaged relative position to neck joint
+                        Eigen::RowVector3f neckTrans = kpt.row(3) - Eigen::RowVector3f(keypoints[3].x, keypoints[3].y, keypoints[3].z);
                         kpt.row(28)=Eigen::RowVector3f(keypoints[28].x, keypoints[28].y, keypoints[28].z);
                         kpt.row(29)=Eigen::RowVector3f(keypoints[29].x, keypoints[29].y, keypoints[29].z);
                         kpt.row(30)=Eigen::RowVector3f(keypoints[30].x, keypoints[30].y, keypoints[30].z);
@@ -259,10 +252,7 @@ int main(int argc, char **argv)
                         ofs_BV<<kpt.row(i)*100<<endl;
                     }
                     body.keypoint = keypoints;
-                    fusedBody_BV.body_list.push_back(body);
-                    
-                    // dist[obj.id] = (Eigen::RowVector2f(keypoints[5].x, keypoints[5].y)-center).norm();
-                    // diff[obj.id] = Eigen::RowVector2f(keypoints[5].x, keypoints[5].y)-center;
+                    fusedBody_BV.body_list.push_back(body);                    
                 }
                 else
                 {
@@ -270,15 +260,6 @@ int main(int argc, char **argv)
                     ofs_BV<<"p "<<-obj.id<<" "<<center(0)*100<<" "<<center(1)*100<<endl;
                 }
             }
-            // ofs<<frame_count<<"\t";
-            // for(int i=0;i<6;i++)
-            // {
-            //     // if(dist.find(i)!=dist.end()) ofs<<dist[i];
-            //     // ofs<<"\t";
-            //     if(dist.find(i)!=dist.end()) ofs<<diff[i](0)<<"\t"<<diff[i](1)<<"\t";
-            //     else ofs<<"\t\t";
-            // }
-            // ofs<<endl;
         }
         if(viewer.fused) viewer.updateData(camera_poses, camera_objects[frame_count][topView], fusedBody_BV, camera_pointClouds);    
         else viewer.updateData(camera_poses, camera_objects[frame_count], camera_bodies[frame_count], camera_pointClouds);    
@@ -289,24 +270,8 @@ int main(int argc, char **argv)
             getchar();
             viewer.stop = false;
         }
-        // if(pause)
-        // {
-        //     // key = (char)cv::waitKey(0);
-        //     getchar();
-        //     pause=  false;
-        // }
-        // else key = (char)cv::waitKey(100);
-
-        // if (key == 'q') {
-        //     quit = true;
-        // }
-        // else if (key == ']')
-        // {
-        //     cout<<111<<endl;
-        //     pause = true;
-        // }
+   
         if(++frame_count==noFrames) break;
-        // frame_count = ++frame_count==noFrames? 0: frame_count;
     }
     viewer.exit();
     ofs.close();
